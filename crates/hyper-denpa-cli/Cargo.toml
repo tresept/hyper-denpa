@@ -1,0 +1,14 @@
+[package]
+name = "hyper-denpa-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "hyper-denpa"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+tokio.workspace = true
+hyper-denpa-core = { path = "../hyper-denpa-core" }

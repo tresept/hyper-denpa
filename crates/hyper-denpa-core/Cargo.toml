@@ -1,0 +1,16 @@
+[package]
+name = "hyper-denpa-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+csv.workspace = true
+log.workspace = true
+quick-xml.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thirtyfour.workspace = true
+zip.workspace = true

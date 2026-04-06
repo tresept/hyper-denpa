@@ -1,0 +1,16 @@
+[package]
+name = "hyper-denpa-discord"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+env_logger.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serenity.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+hyper-denpa-core = { path = "../hyper-denpa-core" }
