@@ -15,4 +15,4 @@ serde_json.workspace = true
 serenity.workspace = true
 sha2.workspace = true
 tokio.workspace = true
-hyper-denpa-sharepoint = { path = "../hyper-denpa-sharepoint" }
+knct-sharepoint = { git = "https://github.com/tresept/knct-sharepoint.git" }

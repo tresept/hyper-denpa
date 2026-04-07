@@ -728,26 +728,13 @@ dependencies = [
  "chrono",
  "csv",
  "env_logger",
- "hyper-denpa-sharepoint",
+ "knct-sharepoint",
  "log",
  "serde",
  "serde_json",
  "serenity",
  "sha2",
  "tokio",
-]
-
-[[package]]
-name = "hyper-denpa-sharepoint"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "log",
- "reqwest",
- "serde",
- "serde_json",
- "thirtyfour",
 ]
 
 [[package]]
@@ -1007,6 +994,20 @@ dependencies = [
  "futures-util",
  "once_cell",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "knct-sharepoint"
+version = "0.1.0"
+source = "git+https://github.com/tresept/knct-sharepoint.git#8d8baf3b50175ef9be98e7f7b620b238e490d6f0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "log",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thirtyfour",
 ]
 
 [[package]]

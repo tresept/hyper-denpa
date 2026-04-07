@@ -2,12 +2,12 @@ mod timetable;
 
 use anyhow::Context as _;
 use chrono::{Local, NaiveDate, NaiveDateTime};
-use hyper_denpa_sharepoint::config::{DATA_DIR, ENV_FILE};
-use hyper_denpa_sharepoint::env::{load_dotenv, optional_env};
-use hyper_denpa_sharepoint::fs_utils::run_prefix;
-use hyper_denpa_sharepoint::models::OutputLayout;
-use hyper_denpa_sharepoint::pipeline::{FetchRequest, fetch_and_store};
-use hyper_denpa_sharepoint::sharepoint::resolve_default_timetable_target;
+use knct_sharepoint::config::{DATA_DIR, ENV_FILE};
+use knct_sharepoint::env::{load_dotenv, optional_env};
+use knct_sharepoint::fs_utils::run_prefix;
+use knct_sharepoint::models::OutputLayout;
+use knct_sharepoint::pipeline::{FetchRequest, fetch_and_store};
+use knct_sharepoint::sharepoint::resolve_default_timetable_target;
 use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
 use serenity::all::{
