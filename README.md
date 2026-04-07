@@ -1,4 +1,6 @@
 # hyper-denpa
+[![GitHub](https://img.shields.io/badge/GitHub-tresept%2Fhyper--denpa-blue?logo=github)](https://github.com/tresept/hyper-denpa)
+
 SharePointから時間割変更Excelを引っこ抜いて整形してDiscordに送ったりCLIとしてOpenClawのSkillとして使えるようにする試み
 
 ## Workspace
