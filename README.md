@@ -39,10 +39,14 @@ cargo run -p hyper-denpa-discord
 
 Discord Bot の slash command:
 
-- `/check`: 最新の時間割変更を強制再取得
+- `/reload`: 最新の時間割変更を再取得
+- `/show`: 最後に取得した時間割変更を日付順に表示
+- `/grep`: 学年を数値 choice で選び、`CN / ES / IT / 1組 / 2組 / 3組` から必要なら絞り込んで表示
 - `/law-csv`: 最新の生 CSV を添付
 - `/set-notify`: 実行したチャンネルを定期通知先に追加
 - `/unset-notify`: 指定チャンネル、または実行したチャンネルを通知先から解除
+
+取得データは `data/YYYY-MM-DD_HH-MM-SS/` 単位で保存され、`/show` と `/grep` は最新の取得結果を参照します。
 
 Bot のログレベルは `.env` の `RUST_LOG` で切り替えられます。例:
 

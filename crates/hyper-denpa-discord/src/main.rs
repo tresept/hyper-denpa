@@ -1,10 +1,10 @@
 mod timetable;
 
 use anyhow::Context as _;
-use chrono::{Local, NaiveDate};
+use chrono::{Local, NaiveDate, NaiveDateTime};
 use hyper_denpa_core::config::{DATA_DIR, ENV_FILE};
 use hyper_denpa_core::env::{load_dotenv, optional_env};
-use hyper_denpa_core::fs_utils::date_prefix;
+use hyper_denpa_core::fs_utils::run_prefix;
 use hyper_denpa_core::models::OutputLayout;
 use hyper_denpa_core::pipeline::{FetchRequest, fetch_and_store};
 use hyper_denpa_core::sharepoint::resolve_default_timetable_target;
@@ -224,7 +224,9 @@ impl EventHandler for Handler {
         };
 
         let result = match command.data.name.as_str() {
-            "check" => handle_check(&ctx, &command).await,
+            "reload" => handle_reload(&ctx, &command).await,
+            "show" => handle_show(&ctx, &command).await,
+            "grep" => handle_grep(&ctx, &command).await,
             "law-csv" => handle_law_csv(&ctx, &command).await,
             "set-notify" => handle_set_notify(&ctx, &command, &self.state).await,
             "unset-notify" => handle_unset_notify(&ctx, &command, &self.state).await,
@@ -274,7 +276,33 @@ async fn main() -> anyhow::Result<()> {
 
 async fn register_commands(ctx: &Context) -> anyhow::Result<()> {
     let commands = vec![
-        CreateCommand::new("check").description("最新の時間割変更を強制再取得して表示します"),
+        CreateCommand::new("reload").description("時間割変更を再取得します"),
+        CreateCommand::new("show").description("最後に取得した時間割変更を日付順に表示します"),
+        CreateCommand::new("grep")
+            .description("指定した学年・学科クラスの時間割変更だけを表示します")
+            .add_option(
+                CreateCommandOption::new(CommandOptionType::Integer, "grade", "学年")
+                    .add_int_choice("1", 1)
+                    .add_int_choice("2", 2)
+                    .add_int_choice("3", 3)
+                    .add_int_choice("4", 4)
+                    .add_int_choice("5", 5)
+                    .required(true),
+            )
+            .add_option(
+                CreateCommandOption::new(
+                    CommandOptionType::String,
+                    "class_name",
+                    "学科・クラス。省略時は学年全体を表示",
+                )
+                .add_string_choice("CN", "CN")
+                .add_string_choice("ES", "ES")
+                .add_string_choice("IT", "IT")
+                .add_string_choice("1組", "1")
+                .add_string_choice("2組", "2")
+                .add_string_choice("3組", "3")
+                .required(false),
+            ),
         CreateCommand::new("law-csv").description("最新の生 CSV を取得して添付します"),
         CreateCommand::new("set-notify").description("このチャンネルを定期通知先に追加します"),
         CreateCommand::new("unset-notify")
@@ -321,11 +349,49 @@ async fn defer_response(ctx: &Context, command: &CommandInteraction) -> anyhow::
         .context("failed to defer interaction response")
 }
 
-async fn handle_check(ctx: &Context, command: &CommandInteraction) -> anyhow::Result<()> {
-    info!("received /check from channel {}", command.channel_id);
+async fn handle_reload(ctx: &Context, command: &CommandInteraction) -> anyhow::Result<()> {
+    info!("received /reload from channel {}", command.channel_id);
     defer_response(ctx, command).await?;
 
     let snapshot = fetch_latest_snapshot().await?;
+    let content = format!("再取得しました．最終取得 ：{}", snapshot.fetched_at);
+
+    command
+        .edit_response(&ctx.http, EditInteractionResponse::new().content(content))
+        .await
+        .context("failed to edit reload response")?;
+    Ok(())
+}
+
+async fn handle_show(ctx: &Context, command: &CommandInteraction) -> anyhow::Result<()> {
+    info!("received /show from channel {}", command.channel_id);
+    defer_response(ctx, command).await?;
+
+    let snapshot = match load_saved_snapshot(None).await {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            return command
+                .edit_response(
+                    &ctx.http,
+                    EditInteractionResponse::new().content(no_saved_data_message(&error)),
+                )
+                .await
+                .context("failed to edit show response")
+                .map(|_| ());
+        }
+    };
+
+    if sorted_visible_entries(&snapshot.entries).is_empty() {
+        return command
+            .edit_response(
+                &ctx.http,
+                EditInteractionResponse::new().content(no_timetable_changes_message()),
+            )
+            .await
+            .context("failed to edit show empty response")
+            .map(|_| ());
+    }
+
     let response = create_manual_check_response(&snapshot);
 
     let builder = match response {
@@ -336,7 +402,90 @@ async fn handle_check(ctx: &Context, command: &CommandInteraction) -> anyhow::Re
     command
         .edit_response(&ctx.http, builder)
         .await
-        .context("failed to edit check response")?;
+        .context("failed to edit show response")?;
+    Ok(())
+}
+
+async fn handle_grep(ctx: &Context, command: &CommandInteraction) -> anyhow::Result<()> {
+    info!("received /grep from channel {}", command.channel_id);
+    defer_response(ctx, command).await?;
+
+    let mut grade: Option<String> = None;
+    let mut class_name: Option<String> = None;
+    for option in command.data.options() {
+        match option.name {
+            "grade" => {
+                if let ResolvedValue::Integer(value) = option.value {
+                    grade = Some(value.to_string());
+                }
+            }
+            "class_name" => {
+                if let ResolvedValue::String(value) = option.value {
+                    class_name = Some(value.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let Some(grade) = grade else {
+        return command
+            .edit_response(
+                &ctx.http,
+                EditInteractionResponse::new().content("学年を指定してください．"),
+            )
+            .await
+            .context("failed to edit grep validation response")
+            .map(|_| ());
+    };
+
+    let snapshot = match load_saved_snapshot(None).await {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            return command
+                .edit_response(
+                    &ctx.http,
+                    EditInteractionResponse::new().content(no_saved_data_message(&error)),
+                )
+                .await
+                .context("failed to edit grep response")
+                .map(|_| ());
+        }
+    };
+
+    let filtered_entries = filter_entries(&snapshot.entries, &grade, class_name.as_deref());
+    if filtered_entries.is_empty() {
+        return command
+            .edit_response(
+                &ctx.http,
+                EditInteractionResponse::new().content(no_timetable_changes_message()),
+            )
+            .await
+            .context("failed to edit grep empty response")
+            .map(|_| ());
+    }
+
+    let mut filtered_snapshot = snapshot.clone();
+    filtered_snapshot.entries = filtered_entries;
+    let title = match class_name.as_deref() {
+        Some(class_name) => format!(
+            "{}年 {} の時間割変更一覧",
+            normalize_grade_for_display(&grade),
+            class_name.trim()
+        ),
+        None => format!("{}年の時間割変更一覧", normalize_grade_for_display(&grade)),
+    };
+    let response = create_custom_embed_response(&filtered_snapshot, &title, 1_035_687);
+
+    let builder = match response {
+        CheckResponse::Embed(embed) => EditInteractionResponse::new().content("").embed(*embed),
+        CheckResponse::Fallback(message) => EditInteractionResponse::new().content(message),
+    };
+
+    command
+        .edit_response(&ctx.http, builder)
+        .await
+        .context("failed to edit grep response")?;
     Ok(())
 }
 
@@ -610,7 +759,7 @@ fn visible_entries(entries: &[TimetableEntry]) -> Vec<TimetableEntry> {
 }
 
 async fn fetch_latest_snapshot() -> anyhow::Result<Snapshot> {
-    let date = date_prefix();
+    let date = run_prefix();
     info!("fetching latest snapshot for {}", date);
     let target = resolve_default_timetable_target()?;
     let report = fetch_and_store(FetchRequest {
@@ -632,8 +781,24 @@ async fn fetch_latest_snapshot() -> anyhow::Result<Snapshot> {
         .with_context(|| format!("failed to read {}", csv_path.display()))?;
 
     Ok(Snapshot {
+        fetched_at: format_run_key(&date),
         date,
-        fetched_at: Local::now().format("%Y-%m-%d %H:%M").to_string(),
+        entries: show_result.entries,
+        csv_path,
+        csv_hash: format!("{:x}", Sha256::digest(&csv_body)),
+    })
+}
+
+async fn load_saved_snapshot(date: Option<&str>) -> anyhow::Result<Snapshot> {
+    let show_result = resolve_show_result(date)?;
+    let (run_key, csv_path) = resolve_csv_path(date)?;
+    let csv_body = tokio::fs::read(&csv_path)
+        .await
+        .with_context(|| format!("failed to read {}", csv_path.display()))?;
+
+    Ok(Snapshot {
+        date: run_key.clone(),
+        fetched_at: format_run_key(&run_key),
         entries: show_result.entries,
         csv_path,
         csv_hash: format!("{:x}", Sha256::digest(&csv_body)),
@@ -652,6 +817,10 @@ enum CsvResponse {
 
 fn create_manual_check_response(snapshot: &Snapshot) -> CheckResponse {
     create_embed_response(snapshot, "現在発表中の時間割変更一覧", 1_035_687)
+}
+
+fn create_custom_embed_response(snapshot: &Snapshot, title: &str, color: u32) -> CheckResponse {
+    create_embed_response(snapshot, title, color)
 }
 
 fn create_periodic_update_response(snapshot: &Snapshot, diff: &EntryDiff) -> CheckResponse {
@@ -892,6 +1061,76 @@ fn limit_exceeded_message() -> String {
     }
 }
 
+fn format_run_key(run_key: &str) -> String {
+    NaiveDateTime::parse_from_str(run_key, "%Y-%m-%d_%H-%M-%S")
+        .map(|datetime| datetime.format("%Y-%m-%d %H:%M:%S").to_string())
+        .or_else(|_| {
+            NaiveDate::parse_from_str(run_key, "%Y-%m-%d")
+                .map(|date| date.format("%Y-%m-%d 00:00:00").to_string())
+        })
+        .unwrap_or_else(|_| run_key.to_string())
+}
+
+fn no_saved_data_message(error: &anyhow::Error) -> String {
+    let body = format!("{error:#}");
+    if body.contains("data ディレクトリがまだありません")
+        || body.contains("data 配下に日付ディレクトリがありません")
+    {
+        "まだ取得済みデータがありません．先に /reload を実行してください．".to_string()
+    } else {
+        format!("エラー: {body}")
+    }
+}
+
+fn no_timetable_changes_message() -> &'static str {
+    "時間割変更は現段階でありません．"
+}
+
+fn filter_entries(
+    entries: &[TimetableEntry],
+    grade: &str,
+    class_name: Option<&str>,
+) -> Vec<TimetableEntry> {
+    let normalized_grade = normalize_grade(grade);
+    let normalized_class = class_name.map(normalize_class_filter);
+
+    visible_entries(entries)
+        .into_iter()
+        .filter(|entry| {
+            normalize_grade(&entry.grade) == normalized_grade
+                && normalized_class
+                    .as_ref()
+                    .is_none_or(|class_name| class_name_matches(&entry.class_name, class_name))
+        })
+        .collect()
+}
+
+fn normalize_grade_for_display(grade: &str) -> String {
+    normalize_grade(grade)
+}
+
+fn normalize_grade(grade: &str) -> String {
+    grade.trim().trim_end_matches('年').trim().to_string()
+}
+
+fn normalize_class_name(class_name: &str) -> String {
+    normalize_entry_value(class_name).to_ascii_uppercase()
+}
+
+fn normalize_class_filter(class_name: &str) -> String {
+    normalize_class_name(class_name)
+        .trim_end_matches('組')
+        .to_string()
+}
+
+fn class_name_matches(entry_class_name: &str, selected_class_name: &str) -> bool {
+    let normalized_entry = normalize_class_name(entry_class_name);
+    let normalized_selected = normalize_class_filter(selected_class_name);
+
+    normalized_entry == normalized_selected
+        || normalized_entry == format!("{normalized_selected}組")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -967,5 +1206,38 @@ mod tests {
             diff.removed,
             vec![entry("3", "ME", "2026/4/9", "木", "1", "休講", "数学B")]
         );
+    }
+
+    #[test]
+    fn filter_entries_matches_grade_only_and_class_name() {
+        let entries = vec![
+            entry("2", "IT", "2026/4/8", "水", "3", "補講", "英語ⅡB"),
+            entry("2", "CN", "2026/4/8", "水", "4", "休講", "数学"),
+            entry("3", "IT", "2026/4/8", "水", "2", "補講", "物理"),
+        ];
+
+        assert_eq!(filter_entries(&entries, "2年", None).len(), 2);
+        assert_eq!(
+            filter_entries(&entries, "2", Some("it")),
+            vec![entry("2", "IT", "2026/4/8", "水", "3", "補講", "英語ⅡB")]
+        );
+    }
+
+    #[test]
+    fn filter_entries_matches_numbered_classes_with_or_without_kumi() {
+        let entries = vec![
+            entry("1", "1", "2026/4/8", "水", "1", "補講", "国語"),
+            entry("1", "1組", "2026/4/8", "水", "2", "休講", "数学"),
+            entry("1", "2組", "2026/4/8", "水", "3", "教室変更", "英語"),
+        ];
+
+        assert_eq!(filter_entries(&entries, "1", Some("1")).len(), 2);
+        assert_eq!(filter_entries(&entries, "1", Some("2")).len(), 1);
+    }
+
+    #[test]
+    fn format_run_key_supports_datetime_and_date() {
+        assert_eq!(format_run_key("2026-04-07_13-45-00"), "2026-04-07 13:45:00");
+        assert_eq!(format_run_key("2026-04-07"), "2026-04-07 00:00:00");
     }
 }

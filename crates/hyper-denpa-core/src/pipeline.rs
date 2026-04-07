@@ -1,5 +1,5 @@
 use crate::auth::{build_client, resolve_auth_material};
-use crate::fs_utils::{date_prefix, write_bytes, write_json, write_text};
+use crate::fs_utils::{run_prefix, write_bytes, write_json, write_text};
 use crate::models::{OutputLayout, RunReport};
 use crate::sharepoint::{SharePointTarget, download_file, fetch_file_metadata};
 use anyhow::{Context, bail};
@@ -19,7 +19,7 @@ fn write_report(layout: &OutputLayout, report: &RunReport) -> anyhow::Result<()>
 }
 
 pub async fn fetch_and_store(request: FetchRequest) -> anyhow::Result<RunReport> {
-    let today = request.date.unwrap_or_else(date_prefix);
+    let today = request.date.unwrap_or_else(run_prefix);
     info!(
         "starting fetch_and_store for target={} date={}",
         request.target.label, today

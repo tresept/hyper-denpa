@@ -13,6 +13,10 @@ pub fn date_prefix() -> String {
     Local::now().format("%Y-%m-%d").to_string()
 }
 
+pub fn run_prefix() -> String {
+    Local::now().format("%Y-%m-%d_%H-%M-%S").to_string()
+}
+
 pub fn write_text(path: &Path, body: &str) -> anyhow::Result<()> {
     fs::write(path, body).with_context(|| format!("failed to write {}", path.display()))
 }

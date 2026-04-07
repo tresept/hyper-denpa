@@ -238,6 +238,16 @@ fn parse_timetable_entries(csv_path: &Path) -> anyhow::Result<Vec<TimetableEntry
     Ok(entries)
 }
 
+fn parse_run_key(value: &str) -> Option<NaiveDateTime> {
+    NaiveDateTime::parse_from_str(value, "%Y-%m-%d_%H-%M-%S")
+        .ok()
+        .or_else(|| {
+            NaiveDate::parse_from_str(value, "%Y-%m-%d")
+                .ok()
+                .and_then(|date| date.and_hms_opt(0, 0, 0))
+        })
+}
+
 fn latest_data_date() -> anyhow::Result<String> {
     let data_dir = PathBuf::from(DATA_DIR);
     if !data_dir.exists() {
@@ -256,22 +266,22 @@ fn latest_data_date() -> anyhow::Result<String> {
         let Some(name) = name.to_str() else {
             continue;
         };
-        if NaiveDate::parse_from_str(name, "%Y-%m-%d").is_ok() {
-            dates.push(name.to_string());
+        if let Some(parsed) = parse_run_key(name) {
+            dates.push((parsed, name.to_string()));
         }
     }
 
-    dates.sort();
+    dates.sort_by(|left, right| left.0.cmp(&right.0));
     dates
         .pop()
+        .map(|(_, name)| name)
         .context("data 配下に日付ディレクトリがありません")
 }
 
 fn resolve_date(date: Option<&str>) -> anyhow::Result<String> {
     match date {
         Some(date) => {
-            NaiveDate::parse_from_str(date, "%Y-%m-%d")
-                .with_context(|| format!("invalid date: {date}"))?;
+            parse_run_key(date).with_context(|| format!("invalid date: {date}"))?;
             Ok(date.to_string())
         }
         None => latest_data_date(),
