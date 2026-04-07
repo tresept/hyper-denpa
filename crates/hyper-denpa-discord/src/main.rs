@@ -17,6 +17,8 @@ use serenity::all::{
     EditInteractionResponse, EventHandler, GatewayIntents, Interaction, Ready, ResolvedValue,
 };
 use sha2::{Digest, Sha256};
+use std::cmp::Ordering as CmpOrdering;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::{
     Arc,
@@ -44,10 +46,41 @@ struct Snapshot {
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default)]
 struct BotState {
     notify_channels: Vec<u64>,
     last_notified_hash: Option<String>,
     last_periodic_error: Option<String>,
+    last_snapshot: Option<StoredSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoredSnapshot {
+    date: String,
+    csv_hash: String,
+    entries: Vec<TimetableEntry>,
+}
+
+impl StoredSnapshot {
+    fn from_snapshot(snapshot: &Snapshot) -> Self {
+        Self {
+            date: snapshot.date.clone(),
+            csv_hash: snapshot.csv_hash.clone(),
+            entries: visible_entries(&snapshot.entries),
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct EntryDiff {
+    added: Vec<TimetableEntry>,
+    removed: Vec<TimetableEntry>,
+}
+
+impl EntryDiff {
+    fn is_empty(&self) -> bool {
+        self.added.is_empty() && self.removed.is_empty()
+    }
 }
 
 struct StateStore {
@@ -126,10 +159,11 @@ impl StateStore {
         self.inner.lock().await.clone()
     }
 
-    async fn remember_notified_hash(&self, hash: String) -> anyhow::Result<()> {
+    async fn remember_snapshot(&self, snapshot: StoredSnapshot) -> anyhow::Result<()> {
         let mut state = self.inner.lock().await;
-        state.last_notified_hash = Some(hash);
+        state.last_notified_hash = Some(snapshot.csv_hash.clone());
         state.last_periodic_error = None;
+        state.last_snapshot = Some(snapshot);
         self.save_locked(&state).await
     }
 
@@ -412,36 +446,44 @@ async fn run_periodic_check(
     let snapshot = fetch_latest_snapshot().await?;
     let state_snapshot = state.snapshot().await;
 
-    match state_snapshot.last_notified_hash.as_deref() {
-        None => {
-            state.remember_notified_hash(snapshot.csv_hash).await?;
-        }
-        Some(previous_hash) if previous_hash == snapshot.csv_hash => {
-            state.clear_error().await?;
-        }
-        Some(_) => {
-            if state_snapshot.notify_channels.is_empty() {
-                state.remember_notified_hash(snapshot.csv_hash).await?;
-                return Ok(());
-            }
+    let current_snapshot = StoredSnapshot::from_snapshot(&snapshot);
+    let Some(previous_snapshot) = state_snapshot.last_snapshot.clone() else {
+        state.remember_snapshot(current_snapshot).await?;
+        return Ok(());
+    };
 
-            match create_periodic_update_response(&snapshot) {
-                CheckResponse::Embed(embed) => {
-                    info!(
-                        "broadcasting periodic update embed to {} channels",
-                        state_snapshot.notify_channels.len()
-                    );
-                    broadcast_embed(http, &state_snapshot.notify_channels, *embed).await
-                }
-                CheckResponse::Fallback(message) => {
-                    warn!("periodic embed exceeded limit, sending fallback message");
-                    broadcast_text(http, &state_snapshot.notify_channels, &message).await
-                }
-            }
-            state.remember_notified_hash(snapshot.csv_hash).await?;
+    if previous_snapshot.csv_hash == snapshot.csv_hash {
+        state.clear_error().await?;
+        return Ok(());
+    }
+
+    let diff = diff_entries(&previous_snapshot.entries, &current_snapshot.entries);
+    if diff.is_empty() {
+        info!("csv changed, but visible timetable entries did not change");
+        state.remember_snapshot(current_snapshot).await?;
+        return Ok(());
+    }
+
+    if state_snapshot.notify_channels.is_empty() {
+        state.remember_snapshot(current_snapshot).await?;
+        return Ok(());
+    }
+
+    match create_periodic_update_response(&snapshot, &diff) {
+        CheckResponse::Embed(embed) => {
+            info!(
+                "broadcasting periodic diff embed to {} channels",
+                state_snapshot.notify_channels.len()
+            );
+            broadcast_embed(http, &state_snapshot.notify_channels, *embed).await;
+        }
+        CheckResponse::Fallback(message) => {
+            warn!("periodic diff embed exceeded limit, sending fallback message");
+            broadcast_text(http, &state_snapshot.notify_channels, &message).await;
         }
     }
 
+    state.remember_snapshot(current_snapshot).await?;
     Ok(())
 }
 
@@ -467,6 +509,106 @@ async fn broadcast_embed(http: &Arc<serenity::http::Http>, channels: &[u64], emb
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct EntryKey {
+    date: String,
+    weekday: String,
+    period: String,
+    grade: String,
+    class_name: String,
+    change_type: String,
+    subject: String,
+}
+
+fn diff_entries(previous: &[TimetableEntry], current: &[TimetableEntry]) -> EntryDiff {
+    let previous_map = group_entries(previous);
+    let current_map = group_entries(current);
+    let mut keys = BTreeSet::new();
+    keys.extend(previous_map.keys().cloned());
+    keys.extend(current_map.keys().cloned());
+
+    let mut added = Vec::new();
+    let mut removed = Vec::new();
+
+    for key in keys {
+        let previous_entries = previous_map.get(&key).map(Vec::as_slice).unwrap_or(&[]);
+        let current_entries = current_map.get(&key).map(Vec::as_slice).unwrap_or(&[]);
+
+        match current_entries.len().cmp(&previous_entries.len()) {
+            CmpOrdering::Greater => {
+                added.extend(current_entries.iter().skip(previous_entries.len()).cloned())
+            }
+            CmpOrdering::Less => {
+                removed.extend(previous_entries.iter().skip(current_entries.len()).cloned())
+            }
+            CmpOrdering::Equal => {}
+        }
+    }
+
+    sort_entries(&mut added);
+    sort_entries(&mut removed);
+    EntryDiff { added, removed }
+}
+
+fn group_entries(entries: &[TimetableEntry]) -> BTreeMap<EntryKey, Vec<TimetableEntry>> {
+    let mut grouped = BTreeMap::new();
+    for entry in entries {
+        grouped
+            .entry(entry_key(entry))
+            .or_insert_with(Vec::new)
+            .push(entry.clone());
+    }
+    grouped
+}
+
+fn entry_key(entry: &TimetableEntry) -> EntryKey {
+    EntryKey {
+        date: normalize_entry_value(&entry.date),
+        weekday: normalize_entry_value(&entry.weekday),
+        period: normalize_entry_value(&entry.period),
+        grade: normalize_entry_value(&entry.grade),
+        class_name: normalize_entry_value(&entry.class_name),
+        change_type: normalize_entry_value(&entry.change_type),
+        subject: normalize_entry_value(&entry.subject),
+    }
+}
+
+fn normalize_entry_value(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn compare_entries(left: &TimetableEntry, right: &TimetableEntry) -> CmpOrdering {
+    parse_entry_date(&left.date)
+        .cmp(&parse_entry_date(&right.date))
+        .then(first_period_number(&left.period).cmp(&first_period_number(&right.period)))
+        .then(left.grade.cmp(&right.grade))
+        .then(left.class_name.cmp(&right.class_name))
+        .then(left.change_type.cmp(&right.change_type))
+        .then(left.subject.cmp(&right.subject))
+}
+
+fn sort_entries(entries: &mut [TimetableEntry]) {
+    entries.sort_by(compare_entries);
+}
+
+fn visible_entries(entries: &[TimetableEntry]) -> Vec<TimetableEntry> {
+    let today = Local::now().date_naive();
+    let mut visible = entries
+        .iter()
+        .filter_map(|entry| {
+            let date = parse_entry_date(&entry.date)?;
+            if date < today {
+                return None;
+            }
+
+            Some(entry.clone())
+        })
+        .collect::<Vec<_>>();
+
+    sort_entries(&mut visible);
+    visible
+}
+
 async fn fetch_latest_snapshot() -> anyhow::Result<Snapshot> {
     let date = date_prefix();
     info!("fetching latest snapshot for {}", date);
@@ -478,7 +620,11 @@ async fn fetch_latest_snapshot() -> anyhow::Result<Snapshot> {
     })
     .await?;
     let layout = OutputLayout::new(&date);
-    convert_xlsx_to_csvs(std::path::Path::new(&report.file_path), &layout.csv_dir, &date)?;
+    convert_xlsx_to_csvs(
+        std::path::Path::new(&report.file_path),
+        &layout.csv_dir,
+        &date,
+    )?;
     let show_result = resolve_show_result(Some(&date))?;
     let (_, csv_path) = resolve_csv_path(Some(&date))?;
     let csv_body = tokio::fs::read(&csv_path)
@@ -508,10 +654,11 @@ fn create_manual_check_response(snapshot: &Snapshot) -> CheckResponse {
     create_embed_response(snapshot, "現在発表中の時間割変更一覧", 1_035_687)
 }
 
-fn create_periodic_update_response(snapshot: &Snapshot) -> CheckResponse {
-    create_embed_response(
+fn create_periodic_update_response(snapshot: &Snapshot, diff: &EntryDiff) -> CheckResponse {
+    create_diff_embed_response(
         snapshot,
-        "更新されました：現在発表中の時間割変更一覧",
+        diff,
+        "更新されました：時間割変更の差分",
         16_711_680,
     )
 }
@@ -540,17 +687,77 @@ fn create_embed_response(snapshot: &Snapshot, title: &str, color: u32) -> CheckR
     ))
 }
 
+fn create_diff_embed_response(
+    snapshot: &Snapshot,
+    diff: &EntryDiff,
+    title: &str,
+    color: u32,
+) -> CheckResponse {
+    let description = format_periodic_diff_description(diff);
+    if description.chars().count() > MAX_EMBED_DESCRIPTION_LEN {
+        return CheckResponse::Fallback(limit_exceeded_message());
+    }
+
+    CheckResponse::Embed(Box::new(
+        CreateEmbed::new()
+            .author(CreateEmbedAuthor::new("時間割変更通知サービス"))
+            .title(title)
+            .description(description)
+            .footer(CreateEmbedFooter::new(format!(
+                "最終取得 ：{}",
+                snapshot.fetched_at
+            )))
+            .field(
+                "免責事項",
+                "この情報には誤差がある可能性があります．正確な変更については，学内掲示またはデンパポータルをご覧ください．損害に対しての責任は負いかねます．",
+                false,
+            )
+            .color(color),
+    ))
+}
+
 fn format_manual_check_description(snapshot: &Snapshot) -> String {
     let entries = sorted_visible_entries(&snapshot.entries);
     if entries.is_empty() {
         return "現在発表中の変更はありません。".to_string();
     }
 
+    format_entry_sections(&entries)
+}
+
+fn format_periodic_diff_description(diff: &EntryDiff) -> String {
+    let mut sections = Vec::new();
+
+    if !diff.added.is_empty() {
+        sections.push(render_diff_group("追加", &diff.added));
+    }
+    if !diff.removed.is_empty() {
+        sections.push(render_diff_group("削除", &diff.removed));
+    }
+
+    sections.join("\n\n")
+}
+
+fn render_diff_group(title: &str, entries: &[TimetableEntry]) -> String {
+    let visible_entries = entries
+        .iter()
+        .take(MAX_VISIBLE_ENTRIES)
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut section = format!("## {title}\n{}", format_entry_sections(&visible_entries));
+    let hidden_count = entries.len().saturating_sub(visible_entries.len());
+    if hidden_count > 0 {
+        section.push_str(&format!("\n…ほか {hidden_count} 件"));
+    }
+    section
+}
+
+fn format_entry_sections(entries: &[TimetableEntry]) -> String {
     let mut sections = Vec::new();
     let mut current_key: Option<(&str, &str, &str)> = None;
     let mut current_lines: Vec<String> = Vec::new();
 
-    for entry in &entries {
+    for entry in entries {
         let key = (
             entry.date.as_str(),
             entry.weekday.as_str(),
@@ -603,34 +810,10 @@ fn render_manual_check_section(
     section
 }
 
-fn sorted_visible_entries(
-    entries: &[TimetableEntry],
-) -> Vec<TimetableEntry> {
-    let today = Local::now().date_naive();
-    let mut visible = entries
-        .iter()
-        .filter_map(|entry| {
-            let date = parse_entry_date(&entry.date)?;
-            if date < today {
-                return None;
-            }
-
-            Some((date, first_period_number(&entry.period), entry.clone()))
-        })
-        .collect::<Vec<_>>();
-
-    visible.sort_by(|left, right| {
-        left.0
-            .cmp(&right.0)
-            .then(left.1.cmp(&right.1))
-            .then(left.2.grade.cmp(&right.2.grade))
-            .then(left.2.class_name.cmp(&right.2.class_name))
-    });
-
-    visible
+fn sorted_visible_entries(entries: &[TimetableEntry]) -> Vec<TimetableEntry> {
+    visible_entries(entries)
         .into_iter()
         .take(MAX_VISIBLE_ENTRIES)
-        .map(|(_, _, entry)| entry)
         .collect()
 }
 
@@ -706,5 +889,83 @@ fn limit_exceeded_message() -> String {
         None => {
             "文字数制限の超過のため送信できません．デンパポータルを参照してください。".to_string()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(
+        grade: &str,
+        class_name: &str,
+        date: &str,
+        weekday: &str,
+        period: &str,
+        change_type: &str,
+        subject: &str,
+    ) -> TimetableEntry {
+        TimetableEntry {
+            grade: grade.to_string(),
+            class_name: class_name.to_string(),
+            date: date.to_string(),
+            weekday: weekday.to_string(),
+            period: period.to_string(),
+            change_type: change_type.to_string(),
+            subject: subject.to_string(),
+        }
+    }
+
+    #[test]
+    fn bot_state_loads_legacy_json_without_snapshot() {
+        let body = r#"{
+          "notify_channels": [123456789],
+          "last_notified_hash": "abc123",
+          "last_periodic_error": null
+        }"#;
+
+        let state: BotState = serde_json::from_str(body).expect("legacy state should deserialize");
+        assert_eq!(state.notify_channels, vec![123456789]);
+        assert_eq!(state.last_notified_hash.as_deref(), Some("abc123"));
+        assert!(state.last_snapshot.is_none());
+    }
+
+    #[test]
+    fn diff_entries_ignores_whitespace_noise() {
+        let previous = vec![entry("2", "IT", "2026/4/8", "水", "3", "補講", "英語ⅡB")];
+        let current = vec![entry(
+            " 2 ",
+            "IT",
+            "2026/4/8",
+            "水",
+            "3",
+            "補講",
+            "英語ⅡB  ",
+        )];
+
+        let diff = diff_entries(&previous, &current);
+        assert!(diff.is_empty());
+    }
+
+    #[test]
+    fn diff_entries_reports_added_and_removed_rows() {
+        let previous = vec![
+            entry("2", "IT", "2026/4/8", "水", "3", "補講", "英語ⅡB"),
+            entry("3", "ME", "2026/4/9", "木", "1", "休講", "数学B"),
+        ];
+        let current = vec![
+            entry("2", "IT", "2026/4/8", "水", "3", "補講", "英語ⅡB"),
+            entry("1", "CN", "2026/4/10", "金", "2", "教室変更", "化学"),
+        ];
+
+        let diff = diff_entries(&previous, &current);
+        assert_eq!(
+            diff.added,
+            vec![entry("1", "CN", "2026/4/10", "金", "2", "教室変更", "化学")]
+        );
+        assert_eq!(
+            diff.removed,
+            vec![entry("3", "ME", "2026/4/9", "木", "1", "休講", "数学B")]
+        );
     }
 }

@@ -4,7 +4,7 @@ use chrono::{NaiveDate, NaiveDateTime};
 use csv::{ReaderBuilder, StringRecord, WriterBuilder};
 use hyper_denpa_core::config::DATA_DIR;
 use hyper_denpa_core::models::OutputLayout;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::fs::File;
 use std::io::Write;
@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 const TIMETABLE_SHEET_NAME: &str = "時間割変更";
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TimetableEntry {
     pub grade: String,
     pub class_name: String,
@@ -86,7 +86,10 @@ fn cell_to_string(cell: &Data) -> String {
         Data::DateTime(_) => cell
             .as_date()
             .map(format_date)
-            .or_else(|| cell.as_datetime().map(|datetime| format_date(datetime.date())))
+            .or_else(|| {
+                cell.as_datetime()
+                    .map(|datetime| format_date(datetime.date()))
+            })
             .unwrap_or_else(|| cell.to_string()),
         Data::DateTimeIso(value) => parse_iso_date(value).unwrap_or_else(|| value.clone()),
         Data::DurationIso(value) => value.clone(),
@@ -314,4 +317,3 @@ pub fn resolve_csv_path(date: Option<&str>) -> anyhow::Result<(String, PathBuf)>
 
     Ok((date, csv_path))
 }
-
