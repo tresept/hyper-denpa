@@ -292,7 +292,7 @@ async fn handle_check(ctx: &Context, command: &CommandInteraction) -> anyhow::Re
     let response = create_manual_check_response(&snapshot);
 
     let builder = match response {
-        CheckResponse::Embed(embed) => EditInteractionResponse::new().content("").embed(embed),
+        CheckResponse::Embed(embed) => EditInteractionResponse::new().content("").embed(*embed),
         CheckResponse::Fallback(message) => EditInteractionResponse::new().content(message),
     };
 
@@ -428,7 +428,7 @@ async fn run_periodic_check(
                         "broadcasting periodic update embed to {} channels",
                         state_snapshot.notify_channels.len()
                     );
-                    broadcast_embed(http, &state_snapshot.notify_channels, embed).await
+                    broadcast_embed(http, &state_snapshot.notify_channels, *embed).await
                 }
                 CheckResponse::Fallback(message) => {
                     warn!("periodic embed exceeded limit, sending fallback message");
@@ -490,7 +490,7 @@ async fn fetch_latest_snapshot() -> anyhow::Result<Snapshot> {
 }
 
 enum CheckResponse {
-    Embed(CreateEmbed),
+    Embed(Box<CreateEmbed>),
     Fallback(String),
 }
 
@@ -517,7 +517,7 @@ fn create_embed_response(snapshot: &Snapshot, title: &str, color: u32) -> CheckR
         return CheckResponse::Fallback(limit_exceeded_message());
     }
 
-    CheckResponse::Embed(
+    CheckResponse::Embed(Box::new(
         CreateEmbed::new()
             .author(CreateEmbedAuthor::new("時間割変更通知サービス"))
             .title(title)
@@ -532,7 +532,7 @@ fn create_embed_response(snapshot: &Snapshot, title: &str, color: u32) -> CheckR
                 false,
             )
             .color(color),
-    )
+    ))
 }
 
 fn format_manual_check_description(snapshot: &Snapshot) -> String {
