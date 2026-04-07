@@ -1,11 +1,13 @@
+mod timetable;
+
 use anyhow::Context as _;
 use chrono::{Local, NaiveDate};
 use hyper_denpa_core::config::{DATA_DIR, ENV_FILE};
 use hyper_denpa_core::env::{load_dotenv, optional_env};
 use hyper_denpa_core::fs_utils::date_prefix;
+use hyper_denpa_core::models::OutputLayout;
 use hyper_denpa_core::pipeline::{FetchRequest, fetch_and_store};
 use hyper_denpa_core::sharepoint::resolve_default_timetable_target;
-use hyper_denpa_core::show::{resolve_csv_path, resolve_show_result};
 use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
 use serenity::all::{
@@ -20,6 +22,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
+use timetable::{TimetableEntry, convert_xlsx_to_csvs, resolve_csv_path, resolve_show_result};
 use tokio::sync::Mutex;
 use tokio::time::{self, Duration};
 
@@ -35,7 +38,7 @@ const MAX_ATTACHMENT_BYTES: u64 = 8 * 1024 * 1024;
 struct Snapshot {
     date: String,
     fetched_at: String,
-    entries: Vec<hyper_denpa_core::models::TimetableEntry>,
+    entries: Vec<TimetableEntry>,
     csv_path: PathBuf,
     csv_hash: String,
 }
@@ -468,12 +471,14 @@ async fn fetch_latest_snapshot() -> anyhow::Result<Snapshot> {
     let date = date_prefix();
     info!("fetching latest snapshot for {}", date);
     let target = resolve_default_timetable_target()?;
-    fetch_and_store(FetchRequest {
+    let report = fetch_and_store(FetchRequest {
         target,
         local_xlsx_path: None,
         date: Some(date.clone()),
     })
     .await?;
+    let layout = OutputLayout::new(&date);
+    convert_xlsx_to_csvs(std::path::Path::new(&report.file_path), &layout.csv_dir, &date)?;
     let show_result = resolve_show_result(Some(&date))?;
     let (_, csv_path) = resolve_csv_path(Some(&date))?;
     let csv_body = tokio::fs::read(&csv_path)
@@ -599,8 +604,8 @@ fn render_manual_check_section(
 }
 
 fn sorted_visible_entries(
-    entries: &[hyper_denpa_core::models::TimetableEntry],
-) -> Vec<hyper_denpa_core::models::TimetableEntry> {
+    entries: &[TimetableEntry],
+) -> Vec<TimetableEntry> {
     let today = Local::now().date_naive();
     let mut visible = entries
         .iter()

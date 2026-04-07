@@ -1,4 +1,4 @@
-use crate::config::{DATA_DIR, TIMETABLE_SHEET_NAME};
+use crate::config::DATA_DIR;
 use crate::fs_utils::ensure_output_dir;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -46,11 +46,6 @@ impl OutputLayout {
     pub fn xlsx_path(&self) -> PathBuf {
         self.xlsx_dir.join(format!("{}-original.xlsx", self.date))
     }
-
-    pub fn timetable_csv_path(&self) -> PathBuf {
-        self.csv_dir
-            .join(format!("{}-{}.csv", self.date, TIMETABLE_SHEET_NAME))
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -58,22 +53,4 @@ pub enum AuthMaterial {
     CookieHeader(String),
     FedAuthRtFa { fed_auth: String, rt_fa: String },
     EstsAuthPersistent(String),
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct TimetableEntry {
-    pub grade: String,
-    pub class_name: String,
-    pub date: String,
-    pub weekday: String,
-    pub period: String,
-    pub change_type: String,
-    pub subject: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ShowResult {
-    pub date: String,
-    pub csv_path: String,
-    pub entries: Vec<TimetableEntry>,
 }

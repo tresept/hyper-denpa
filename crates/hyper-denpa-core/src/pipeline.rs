@@ -2,7 +2,6 @@ use crate::auth::{build_client, resolve_auth_material};
 use crate::fs_utils::{date_prefix, write_bytes, write_json, write_text};
 use crate::models::{OutputLayout, RunReport};
 use crate::sharepoint::{SharePointTarget, download_file, fetch_file_metadata};
-use crate::xlsx::convert_xlsx_to_csvs;
 use anyhow::{Context, bail};
 use log::info;
 use std::fs;
@@ -44,16 +43,12 @@ pub async fn fetch_and_store(request: FetchRequest) -> anyhow::Result<RunReport>
             })?;
         }
 
-        let csv_files = convert_xlsx_to_csvs(&managed_xlsx_path, &layout.csv_dir, &today)?;
         let report = RunReport {
             metadata_status: 0,
             file_status: 0,
             file_path: managed_xlsx_path.display().to_string(),
             auth_mode: "local_xlsx_path".to_string(),
-            csv_files: csv_files
-                .iter()
-                .map(|path| path.display().to_string())
-                .collect(),
+            csv_files: Vec::new(),
         };
         write_report(&layout, &report)?;
         info!("completed local xlsx import for {}", request.target.label);
@@ -120,17 +115,13 @@ pub async fn fetch_and_store(request: FetchRequest) -> anyhow::Result<RunReport>
 
     write_bytes(&file_path, &file_bytes)?;
     info!("downloaded xlsx to {}", file_path.display());
-    let csv_files = convert_xlsx_to_csvs(&file_path, &layout.csv_dir, &today)?;
 
     let report = RunReport {
         metadata_status,
         file_status,
         file_path: file_path.display().to_string(),
         auth_mode,
-        csv_files: csv_files
-            .iter()
-            .map(|path| path.display().to_string())
-            .collect(),
+        csv_files: Vec::new(),
     };
     write_report(&layout, &report)?;
     info!(

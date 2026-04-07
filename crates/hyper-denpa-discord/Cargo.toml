@@ -5,7 +5,9 @@ edition.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+calamine.workspace = true
 chrono.workspace = true
+csv.workspace = true
 env_logger.workspace = true
 log.workspace = true
 serde.workspace = true

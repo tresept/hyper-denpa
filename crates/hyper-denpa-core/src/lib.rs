@@ -5,5 +5,3 @@ pub mod fs_utils;
 pub mod models;
 pub mod pipeline;
 pub mod sharepoint;
-pub mod show;
-pub mod xlsx;

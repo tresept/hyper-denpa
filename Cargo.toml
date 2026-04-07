@@ -1,7 +1,6 @@
 [workspace]
 members = [
     "crates/hyper-denpa-core",
-    "crates/hyper-denpa-cli",
     "crates/hyper-denpa-discord",
 ]
 resolver = "2"

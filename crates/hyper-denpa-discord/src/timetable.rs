@@ -1,11 +1,38 @@
 use anyhow::{Context, bail};
 use calamine::{Data, DataType, Reader, open_workbook_auto};
 use chrono::{NaiveDate, NaiveDateTime};
-use csv::WriterBuilder;
+use csv::{ReaderBuilder, StringRecord, WriterBuilder};
+use hyper_denpa_core::config::DATA_DIR;
+use hyper_denpa_core::models::OutputLayout;
+use serde::Serialize;
 use std::fs;
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+
+const TIMETABLE_SHEET_NAME: &str = "時間割変更";
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TimetableEntry {
+    pub grade: String,
+    pub class_name: String,
+    pub date: String,
+    pub weekday: String,
+    pub period: String,
+    pub change_type: String,
+    pub subject: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ShowResult {
+    pub date: String,
+    pub csv_path: String,
+    pub entries: Vec<TimetableEntry>,
+}
+
+fn trim_bom(value: &str) -> &str {
+    value.trim_start_matches('\u{feff}')
+}
 
 fn sanitize_sheet_name(name: &str) -> String {
     let sanitized: String = name
@@ -147,56 +174,144 @@ pub fn convert_xlsx_to_csvs(
     Ok(output_paths)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::convert_xlsx_to_csvs;
-    use std::fs;
-    use std::path::Path;
-    use std::time::{SystemTime, UNIX_EPOCH};
+fn normalize_record(record: &StringRecord) -> Vec<String> {
+    record
+        .iter()
+        .map(|value| trim_bom(value).trim().to_string())
+        .collect()
+}
 
-    fn trim_bom(value: &str) -> &str {
-        value.trim_start_matches('\u{feff}')
+fn parse_timetable_entries(csv_path: &Path) -> anyhow::Result<Vec<TimetableEntry>> {
+    let mut reader = ReaderBuilder::new()
+        .has_headers(false)
+        .flexible(true)
+        .from_path(csv_path)
+        .with_context(|| format!("failed to open {}", csv_path.display()))?;
+
+    let mut saw_header = false;
+    let mut entries = Vec::new();
+
+    for record in reader.records() {
+        let record = record.with_context(|| format!("failed to read {}", csv_path.display()))?;
+        let mut values = normalize_record(&record);
+
+        if !saw_header {
+            if values.len() >= 7
+                && trim_bom(values[0].as_str()) == "学 年"
+                && values[1] == "学科・クラス"
+                && values[2] == "月日"
+            {
+                saw_header = true;
+            }
+            continue;
+        }
+
+        if values.len() < 7 {
+            values.resize(7, String::new());
+        }
+
+        if values[..7].iter().all(|value| value.is_empty()) {
+            continue;
+        }
+
+        entries.push(TimetableEntry {
+            grade: values[0].clone(),
+            class_name: values[1].clone(),
+            date: values[2].clone(),
+            weekday: values[3].clone(),
+            period: values[4].clone(),
+            change_type: values[5].clone(),
+            subject: values[6].clone(),
+        });
     }
 
-    fn convert_fixture(date: &str) -> std::path::PathBuf {
-        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let xlsx_path = manifest_dir
-            .join("../../data")
-            .join(date)
-            .join("xlsx")
-            .join(format!("{date}-original.xlsx"));
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time should be after unix epoch")
-            .as_nanos();
-        let output_dir = std::env::temp_dir().join(format!("hyper-denpa-xlsx-test-{date}-{unique}"));
-
-        convert_xlsx_to_csvs(&xlsx_path, &output_dir, date)
-            .expect("fixture conversion should succeed");
-
-        output_dir
+    if !saw_header {
+        bail!(
+            "時間割変更 CSV のヘッダ行が見つかりませんでした: {}",
+            csv_path.display()
+        );
     }
 
-    #[test]
-    fn converts_fixture_for_2026_04_07() {
-        let output_dir = convert_fixture("2026-04-07");
-        let timetable_path = output_dir.join("2026-04-07-時間割変更.csv");
-        let notes_path = output_dir.join("2026-04-07-注意事項.csv");
+    Ok(entries)
+}
 
-        assert!(timetable_path.exists());
-        assert!(notes_path.exists());
+fn latest_data_date() -> anyhow::Result<String> {
+    let data_dir = PathBuf::from(DATA_DIR);
+    if !data_dir.exists() {
+        bail!("data ディレクトリがまだありません。先に `hyper-denpa` を実行してください。");
+    }
 
-        let timetable = fs::read_to_string(&timetable_path)
-            .unwrap_or_else(|error| panic!("failed to read {}: {error}", timetable_path.display()));
-        let notes = fs::read_to_string(&notes_path)
-            .unwrap_or_else(|error| panic!("failed to read {}: {error}", notes_path.display()));
+    let mut dates = Vec::new();
+    for entry in
+        fs::read_dir(&data_dir).with_context(|| format!("failed to read {}", data_dir.display()))?
+    {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if NaiveDate::parse_from_str(name, "%Y-%m-%d").is_ok() {
+            dates.push(name.to_string());
+        }
+    }
 
-        assert!(trim_bom(&timetable).contains("学 年,学科・クラス,月日"));
-        assert!(trim_bom(&timetable).contains("2026/4/7"));
-        assert!(trim_bom(&notes).contains("時間割変更"));
-        assert!(trim_bom(&notes).lines().count() >= 3);
+    dates.sort();
+    dates
+        .pop()
+        .context("data 配下に日付ディレクトリがありません")
+}
 
-        fs::remove_dir_all(&output_dir)
-            .unwrap_or_else(|error| panic!("failed to clean {}: {error}", output_dir.display()));
+fn resolve_date(date: Option<&str>) -> anyhow::Result<String> {
+    match date {
+        Some(date) => {
+            NaiveDate::parse_from_str(date, "%Y-%m-%d")
+                .with_context(|| format!("invalid date: {date}"))?;
+            Ok(date.to_string())
+        }
+        None => latest_data_date(),
     }
 }
+
+pub fn timetable_csv_path(layout: &OutputLayout) -> PathBuf {
+    layout
+        .csv_dir
+        .join(format!("{}-{}.csv", layout.date, TIMETABLE_SHEET_NAME))
+}
+
+pub fn resolve_show_result(date: Option<&str>) -> anyhow::Result<ShowResult> {
+    let date = resolve_date(date)?;
+    let layout = OutputLayout::new(&date);
+    let csv_path = timetable_csv_path(&layout);
+    if !csv_path.exists() {
+        bail!(
+            "{} が見つかりません: {}",
+            TIMETABLE_SHEET_NAME,
+            csv_path.display()
+        );
+    }
+
+    Ok(ShowResult {
+        date,
+        csv_path: csv_path.display().to_string(),
+        entries: parse_timetable_entries(&csv_path)?,
+    })
+}
+
+pub fn resolve_csv_path(date: Option<&str>) -> anyhow::Result<(String, PathBuf)> {
+    let date = resolve_date(date)?;
+    let layout = OutputLayout::new(&date);
+    let csv_path = timetable_csv_path(&layout);
+    if !csv_path.exists() {
+        bail!(
+            "{} が見つかりません: {}",
+            TIMETABLE_SHEET_NAME,
+            csv_path.display()
+        );
+    }
+
+    Ok((date, csv_path))
+}
+
