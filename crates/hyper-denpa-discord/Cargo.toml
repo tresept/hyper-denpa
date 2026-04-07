@@ -15,4 +15,4 @@ serde_json.workspace = true
 serenity.workspace = true
 sha2.workspace = true
 tokio.workspace = true
-hyper-denpa-core = { path = "../hyper-denpa-core" }
+hyper-denpa-sharepoint = { path = "../hyper-denpa-sharepoint" }

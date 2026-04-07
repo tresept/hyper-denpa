@@ -1,5 +1,5 @@
 [package]
-name = "hyper-denpa-core"
+name = "hyper-denpa-sharepoint"
 version.workspace = true
 edition.workspace = true
 

@@ -720,7 +720,25 @@ dependencies = [
 ]
 
 [[package]]
-name = "hyper-denpa-core"
+name = "hyper-denpa-discord"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "calamine",
+ "chrono",
+ "csv",
+ "env_logger",
+ "hyper-denpa-sharepoint",
+ "log",
+ "serde",
+ "serde_json",
+ "serenity",
+ "sha2",
+ "tokio",
+]
+
+[[package]]
+name = "hyper-denpa-sharepoint"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -730,24 +748,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thirtyfour",
-]
-
-[[package]]
-name = "hyper-denpa-discord"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "calamine",
- "chrono",
- "csv",
- "env_logger",
- "hyper-denpa-core",
- "log",
- "serde",
- "serde_json",
- "serenity",
- "sha2",
- "tokio",
 ]
 
 [[package]]
