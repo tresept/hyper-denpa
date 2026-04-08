@@ -9,7 +9,10 @@ crates/
 ```
 
 - `hyper-denpa-discord`: Discord Bot
-- `knct-sharepoint`: 外部 Git 依存の SharePoint 取得ライブラリ
+- `knct-sharepoint`: 別 repo の SharePoint 取得ライブラリ
+
+この workspace では `https://github.com/tresept/knct-sharepoint.git` を依存先にしつつ、
+開発中は root から見て `../knct-sharepoint` を Cargo patch で優先します。
 
 ## Auth
 
@@ -18,17 +21,16 @@ crates/
 ```env
 RUST_LOG=warn,knct_sharepoint=debug,hyper_denpa_discord=debug
 DISCORD_TOKEN=...
-SHAREPOINT_SITE_URL=https://example.sharepoint.com/sites/example
-SHAREPOINT_ITEM_ID=00000000-0000-0000-0000-000000000000
 SHAREPOINT_DOC_URL=https://example.sharepoint.com/:x:/r/sites/example/_layouts/15/Doc.aspx?sourcedoc=%7B00000000-0000-0000-0000-000000000000%7D&file=henkou.xlsx
 SHAREPOINT_FEDAUTH=...
 SHAREPOINT_RTFA=...
-ESTSAUTHPERSISTENT=...
 ```
 
 または `SHAREPOINT_COOKIE_HEADER="FedAuth=...; rtFa=..."` でも動きます．
 
-`SHAREPOINT_SITE_URL` と `SHAREPOINT_ITEM_ID` は必須です．`SHAREPOINT_DOC_URL` は Discord の案内文にリンクを出したい場合だけ設定してください
+推奨は `SHAREPOINT_DOC_URL` を使う方法です．
+互換のため `SHAREPOINT_SITE_URL` と `SHAREPOINT_ITEM_ID` から直接組み立てる方法も残していますが、その場合は `SHAREPOINT_DOC_URL` が無いので案内リンクは出ません。
+`ESTSAUTHPERSISTENT` は現在未対応です。
 
 ## Commands
 

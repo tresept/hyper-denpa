@@ -23,3 +23,6 @@ serenity = { version = "0.12", default-features = false, features = ["builder", 
 sha2 = "0.10"
 thirtyfour = "0.35"
 tokio = { version = "1", features = ["full"] }
+
+[patch."https://github.com/tresept/knct-sharepoint.git"]
+knct-sharepoint = { path = "../knct-sharepoint" }

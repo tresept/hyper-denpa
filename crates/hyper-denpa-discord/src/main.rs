@@ -1,13 +1,13 @@
+mod app;
 mod timetable;
 
 use anyhow::Context as _;
+use app::{
+    DATA_DIR, ENV_FILE, OutputLayout, load_dotenv, optional_env, resolve_document_url,
+    resolve_fetch_request, run_prefix,
+};
 use chrono::{Local, NaiveDate, NaiveDateTime};
-use knct_sharepoint::config::{DATA_DIR, ENV_FILE};
-use knct_sharepoint::env::{load_dotenv, optional_env};
-use knct_sharepoint::fs_utils::run_prefix;
-use knct_sharepoint::models::OutputLayout;
-use knct_sharepoint::pipeline::{FetchRequest, fetch_and_store};
-use knct_sharepoint::sharepoint::resolve_default_timetable_target;
+use knct_sharepoint::pipeline::fetch_and_store;
 use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
 use serenity::all::{
@@ -761,14 +761,11 @@ fn visible_entries(entries: &[TimetableEntry]) -> Vec<TimetableEntry> {
 async fn fetch_latest_snapshot() -> anyhow::Result<Snapshot> {
     let date = run_prefix();
     info!("fetching latest snapshot for {}", date);
-    let target = resolve_default_timetable_target()?;
-    let report = fetch_and_store(FetchRequest {
-        target,
-        local_xlsx_path: None,
-        date: Some(date.clone()),
-    })
-    .await?;
-    let layout = OutputLayout::new(&date);
+    let env_values =
+        load_dotenv().with_context(|| format!("bot 用の {} を読み取れませんでした", ENV_FILE))?;
+    let layout = OutputLayout::ensure(&date)?;
+    let request = resolve_fetch_request(&env_values, layout.xlsx_dir.clone())?;
+    let report = fetch_and_store(request).await?;
     convert_xlsx_to_csvs(
         std::path::Path::new(&report.file_path),
         &layout.csv_dir,
@@ -1048,9 +1045,9 @@ async fn build_law_csv_response(
 }
 
 fn limit_exceeded_message() -> String {
-    match resolve_default_timetable_target()
+    match load_dotenv()
         .ok()
-        .and_then(|target| target.document_url)
+        .and_then(|values| resolve_document_url(&values))
     {
         Some(url) => {
             format!("文字数制限の超過のため送信できません．デンパポータルを参照してください：{url}")
